@@ -7,42 +7,61 @@
 <style>
   body {
     margin: 0;
-    background: linear-gradient(to bottom, #f8fafc, #e2e8f0);
-    font-family: sans-serif;
+    font-family: 'Segoe UI', sans-serif;
+    background: linear-gradient(180deg, #a1c4fd, #c2e9fb);
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100vh;
     user-select: none;
+    overflow: hidden;
   }
   #game-container {
-    background: white;
-    padding: 10px;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     text-align: center;
+    position: relative;
   }
   canvas {
-    background: white;
-    border-radius: 10px;
+    background: radial-gradient(circle at center, #e0f7fa, #b2ebf2);
+    border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.25);
     display: block;
+    margin: auto;
   }
-  button {
-    padding: 8px 16px;
-    margin: 6px;
+  .menu {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(255,255,255,0.9);
+    padding: 20px;
+    border-radius: 20px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    z-index: 2;
+  }
+  .menu h1 {
+    margin-bottom: 15px;
+    color: #0284c7;
+  }
+  .bubble-btn {
+    display: inline-block;
+    padding: 10px 20px;
+    margin: 8px;
     border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    background: #0ea5e9;
+    border-radius: 50px;
+    background: linear-gradient(145deg, #4facfe, #00f2fe);
     color: white;
-    font-size: 14px;
+    font-size: 18px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    transition: transform 0.15s ease;
   }
-  button:hover {
-    background: #0284c7;
+  .bubble-btn:hover {
+    transform: scale(1.1);
   }
   #scoreboard {
     font-weight: bold;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    color: #0f172a;
   }
 </style>
 </head>
@@ -50,33 +69,66 @@
 
 <div id="game-container">
   <div id="scoreboard">Score: 0 | Best: 0</div>
-  <canvas id="gameCanvas" width="360" height="540"></canvas><br>
-  <button id="startBtn">Start</button>
+  <canvas id="gameCanvas" width="360" height="540"></canvas>
+  
+  <!-- Start Menu -->
+  <div id="startMenu" class="menu">
+    <h1>Square Dodger</h1>
+    <button class="bubble-btn" onclick="startGame()">Start Game</button>
+  </div>
+  
+  <!-- Death Menu -->
+  <div id="deathMenu" class="menu" style="display:none;">
+    <h1>Game Over!</h1>
+    <p id="finalScore"></p>
+    <button class="bubble-btn" onclick="startGame()">Try Again</button>
+  </div>
 </div>
 
 <script>
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
-const startBtn = document.getElementById("startBtn");
 const scoreboard = document.getElementById("scoreboard");
+const startMenu = document.getElementById("startMenu");
+const deathMenu = document.getElementById("deathMenu");
+const finalScoreText = document.getElementById("finalScore");
 
-let player = { x: 160, y: 480, size: 28, speed: 5 };
+// --- Game Variables ---
+let player = { x: 160, y: 480, size: 28, targetX: 160, speed: 0.15 };
 let obstacles = [];
+let clouds = [];
 let running = false;
 let score = 0;
 let best = parseInt(localStorage.getItem("square_dodger_best")) || 0;
 let keys = {};
+let spawnTimer = 0;
 
+// --- Utility Functions ---
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function rand(min, max) { return Math.random() * (max - min) + min; }
 
 document.addEventListener("keydown", e => { keys[e.key] = true; });
 document.addEventListener("keyup", e => { keys[e.key] = false; });
 
+// --- Clouds Setup ---
+function spawnCloud() {
+  clouds.push({
+    x: rand(-50, canvas.width - 50),
+    y: rand(-40, canvas.height / 2),
+    w: rand(60, 120),
+    h: rand(30, 50),
+    speed: rand(0.1, 0.3),
+    alpha: rand(0.3, 0.6)
+  });
+}
+for (let i = 0; i < 5; i++) spawnCloud();
+
+// --- Game Setup ---
 function resetGame() {
   score = 0;
   player.x = 160;
   player.y = 480;
+  player.targetX = 160;
   obstacles = [];
 }
 
@@ -88,14 +140,23 @@ function spawnObstacle() {
   obstacles.push({ x, y: -h, w, h, vy });
 }
 
-let spawnTimer = 0;
 function update() {
   if (!running) return;
 
-  // Player movement
-  if (keys["ArrowLeft"] || keys["a"]) player.x -= player.speed;
-  if (keys["ArrowRight"] || keys["d"]) player.x += player.speed;
-  player.x = clamp(player.x, 4, canvas.width - player.size - 4);
+  // Move clouds
+  for (let c of clouds) {
+    c.x += c.speed;
+    if (c.x > canvas.width + 50) {
+      c.x = -c.w;
+      c.y = rand(-40, canvas.height / 2);
+    }
+  }
+
+  // Smooth player movement
+  if (keys["ArrowLeft"] || keys["a"]) player.targetX -= 5;
+  if (keys["ArrowRight"] || keys["d"]) player.targetX += 5;
+  player.targetX = clamp(player.targetX, 4, canvas.width - player.size - 4);
+  player.x += (player.targetX - player.x) * player.speed;
 
   // Spawn obstacles
   spawnTimer -= 16;
@@ -127,17 +188,34 @@ function update() {
   }
 }
 
+function drawCloud(c) {
+  ctx.fillStyle = `rgba(255,255,255,${c.alpha})`;
+  ctx.beginPath();
+  ctx.ellipse(c.x, c.y, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawShinyBlock(x, y, w, h, color) {
+  let grad = ctx.createLinearGradient(x, y, x, y + h);
+  grad.addColorStop(0, "white");
+  grad.addColorStop(0.3, color);
+  grad.addColorStop(1, "#00000044");
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y, w, h);
+}
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Player
-  ctx.fillStyle = "#0ea5e9";
-  ctx.fillRect(player.x, player.y, player.size, player.size);
+  // Draw clouds in background
+  for (const c of clouds) drawCloud(c);
 
-  // Obstacles
-  ctx.fillStyle = "#ef4444";
+  // Player (shiny blue block)
+  drawShinyBlock(player.x, player.y, player.size, player.size, "#0ea5e9");
+
+  // Obstacles (shiny red blocks)
   for (const o of obstacles) {
-    ctx.fillRect(o.x, o.y, o.w, o.h);
+    drawShinyBlock(o.x, o.y, o.w, o.h, "#ef4444");
   }
 
   scoreboard.textContent = `Score: ${score} | Best: ${best}`;
@@ -152,6 +230,8 @@ function loop() {
 function startGame() {
   resetGame();
   running = true;
+  startMenu.style.display = "none";
+  deathMenu.style.display = "none";
   loop();
 }
 
@@ -159,10 +239,9 @@ function gameOver() {
   running = false;
   best = Math.max(best, score);
   localStorage.setItem("square_dodger_best", best);
-  alert(`Game Over! Your score: ${score}`);
+  finalScoreText.textContent = `Your score: ${score}`;
+  deathMenu.style.display = "block";
 }
-
-startBtn.addEventListener("click", startGame);
 </script>
 
 </body>
