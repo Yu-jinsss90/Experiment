@@ -1,334 +1,169 @@
-import React, { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Pause, Play, RotateCcw, Volume2, VolumeX, Trophy } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-
-// --- Game Types
-interface Player { x: number; y: number; size: number; speed: number; }
-interface Obstacle { x: number; y: number; w: number; h: number; vy: number; }
-
-// --- Utility
-function clamp(n: number, min: number, max: number) { return Math.max(min, Math.min(max, n)); }
-function rand(min: number, max: number) { return Math.random() * (max - min) + min; }
-
-// --- Main Component
-export default function SquareDodger() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const keysRef = useRef<Record<string, boolean>>({});
-  const [running, setRunning] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [score, setScore] = useState(0);
-  const [best, setBest] = useState<number>(() => {
-    const v = localStorage.getItem("square_dodger_best");
-    return v ? parseInt(v) : 0;
-  });
-  const [muted, setMuted] = useState(true);
-  const [difficulty, setDifficulty] = useState<"Easy" | "Normal" | "Hard">("Normal");
-  const [touching, setTouching] = useState(false);
-
-  const playerRef = useRef<Player>({ x: 160, y: 520, size: 28, speed: 4.4 });
-  const obstaclesRef = useRef<Obstacle[]>([]);
-  const spawnTimerRef = useRef(0);
-  const lastTsRef = useRef<number | null>(null);
-
-  // Simple beep using Web Audio (no external assets)
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  function beep(freq = 440, dur = 0.08) {
-    if (muted) return;
-    if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const ctx = audioCtxRef.current;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "square"; o.frequency.value = freq; g.gain.value = 0.02;
-    o.connect(g); g.connect(ctx.destination);
-    o.start(); o.stop(ctx.currentTime + dur);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Square Dodger</title>
+<style>
+  body {
+    margin: 0;
+    background: linear-gradient(to bottom, #f8fafc, #e2e8f0);
+    font-family: sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    user-select: none;
   }
-
-  // Resize canvas to device pixel ratio for crisp graphics
-  function resizeCanvas() {
-    const canvas = canvasRef.current!;
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.min(420, Math.floor(window.innerWidth - 32));
-    const height = Math.min(640, Math.floor(window.innerHeight - 180));
-    canvas.style.width = width + "px";
-    canvas.style.height = height + "px";
-    canvas.width = Math.floor(width * dpr);
-    canvas.height = Math.floor(height * dpr);
+  #game-container {
+    background: white;
+    padding: 10px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    text-align: center;
   }
-
-  // Init listeners
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (["ArrowLeft","ArrowRight","a","d","A","D"].includes(e.key)) e.preventDefault();
-      keysRef.current[e.key] = e.type === "keydown";
-      if (e.key === "p" || e.key === "P") togglePause();
-      if (e.key === " ") { e.preventDefault(); if (!running) startGame(); }
-    };
-    const onBlur = () => setPaused(true);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKey);
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKey);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("resize", resizeCanvas);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
-
-  function difficultyParams() {
-    switch (difficulty) {
-      case "Easy": return { speed: 0.8, spawn: 750 };
-      case "Hard": return { speed: 1.35, spawn: 440 };
-      default: return { speed: 1.0, spawn: 600 };
-    }
+  canvas {
+    background: white;
+    border-radius: 10px;
+    display: block;
   }
-
-  function startGame() {
-    setScore(0);
-    playerRef.current = { x: 160, y: 520, size: 28, speed: difficulty === "Hard" ? 5.2 : difficulty === "Easy" ? 4.1 : 4.6 };
-    obstaclesRef.current = [];
-    spawnTimerRef.current = 0;
-    lastTsRef.current = null;
-    setRunning(true);
-    setPaused(false);
-    loop();
+  button {
+    padding: 8px 16px;
+    margin: 6px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background: #0ea5e9;
+    color: white;
+    font-size: 14px;
   }
-
-  function togglePause() {
-    if (!running) return;
-    setPaused(p => !p);
-    if (paused) loop();
+  button:hover {
+    background: #0284c7;
   }
-
-  // Touch controls (left/right half to move)
-  function handleTouch(e: React.TouchEvent) {
-    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    const x = e.touches[0].clientX - rect.left;
-    const half = rect.width / 2;
-    keysRef.current["ArrowLeft"] = x < half;
-    keysRef.current["ArrowRight"] = x >= half;
+  #scoreboard {
+    font-weight: bold;
+    margin-bottom: 6px;
   }
+</style>
+</head>
+<body>
 
-  function stopTouch() {
-    keysRef.current["ArrowLeft"] = false;
-    keysRef.current["ArrowRight"] = false;
-  }
+<div id="game-container">
+  <div id="scoreboard">Score: 0 | Best: 0</div>
+  <canvas id="gameCanvas" width="360" height="540"></canvas><br>
+  <button id="startBtn">Start</button>
+</div>
 
-  function loop(ts?: number) {
-    if (!canvasRef.current) return;
-    if (!running || paused) return;
-    const canvas = canvasRef.current;
-    const dpr = window.devicePixelRatio || 1;
-    const ctx = canvas.getContext("2d")!;
-    const p = playerRef.current;
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const startBtn = document.getElementById("startBtn");
+const scoreboard = document.getElementById("scoreboard");
 
-    // delta time
-    const now = ts || performance.now();
-    const last = lastTsRef.current ?? now;
-    const dt = clamp((now - last) / 16.666, 0, 2); // normalize to ~60fps steps
-    lastTsRef.current = now;
+let player = { x: 160, y: 480, size: 28, speed: 5 };
+let obstacles = [];
+let running = false;
+let score = 0;
+let best = parseInt(localStorage.getItem("square_dodger_best")) || 0;
+let keys = {};
 
-    // Clear
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function rand(min, max) { return Math.random() * (max - min) + min; }
 
-    // World dimensions in CSS pixels
-    const worldW = canvas.width / dpr;
-    const worldH = canvas.height / dpr;
+document.addEventListener("keydown", e => { keys[e.key] = true; });
+document.addEventListener("keyup", e => { keys[e.key] = false; });
 
-    // Update player
-    let vx = 0;
-    if (keysRef.current["ArrowLeft"] || keysRef.current["a"] || keysRef.current["A"]) vx -= 1;
-    if (keysRef.current["ArrowRight"] || keysRef.current["d"] || keysRef.current["D"]) vx += 1;
-    p.x = clamp(p.x + vx * p.speed * dt, 4, worldW - p.size - 4);
-
-    // Spawn obstacles
-    spawnTimerRef.current -= dt * 1000;
-    const { speed, spawn } = difficultyParams();
-    if (spawnTimerRef.current <= 0) {
-      const w = rand(24, 60);
-      const h = rand(14, 28);
-      const x = rand(4, worldW - w - 4);
-      const vy = rand(2.2, 3.6) * speed;
-      obstaclesRef.current.push({ x, y: -h, w, h, vy });
-      spawnTimerRef.current = spawn + rand(-120, 120);
-    }
-
-    // Update obstacles
-    const obs = obstaclesRef.current;
-    for (let i = obs.length - 1; i >= 0; i--) {
-      const o = obs[i];
-      o.y += o.vy * (dt * 3.2);
-      if (o.y > worldH + 40) { obs.splice(i, 1); setScore(s => s + 1); }
-    }
-
-    // Collision check
-    for (const o of obs) {
-      if (
-        p.x < o.x + o.w &&
-        p.x + p.size > o.x &&
-        p.y < o.y + o.h &&
-        p.y + p.size > o.y
-      ) {
-        gameOver();
-        return;
-      }
-    }
-
-    // Draw player
-    ctx.save();
-    ctx.scale(dpr, dpr);
-
-    // Background grid
-    ctx.globalAlpha = 0.08;
-    for (let x = 0; x < worldW; x += 20) {
-      ctx.fillRect(x, 0, 1, worldH);
-    }
-    for (let y = 0; y < worldH; y += 20) {
-      ctx.fillRect(0, y, worldW, 1);
-    }
-    ctx.globalAlpha = 1;
-
-    // Player square
-    ctx.fillStyle = "#0ea5e9"; // sky-500
-    ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
-
-    // Obstacles
-    ctx.fillStyle = "#ef4444"; // red-500
-    for (const o of obs) {
-      ctx.fillRect(Math.round(o.x), Math.round(o.y), Math.round(o.w), Math.round(o.h));
-    }
-
-    // Score text
-    ctx.fillStyle = "#111827"; // gray-900
-    ctx.font = "bold 16px ui-sans-serif, system-ui, -apple-system";
-    ctx.fillText(`Score: ${score}`, 8, 20);
-    ctx.fillText(`Best: ${best}`, worldW - 100, 20);
-
-    ctx.restore();
-
-    rafRef.current = requestAnimationFrame(loop);
-  }
-
-  function gameOver() {
-    setRunning(false);
-    setPaused(false);
-    lastTsRef.current = null;
-    const newBest = Math.max(best, score);
-    if (newBest !== best) {
-      localStorage.setItem("square_dodger_best", String(newBest));
-      setBest(newBest);
-    }
-    beep(220, 0.15);
-  }
-
-  // Start position reset if canvas size changes while playing
-  useEffect(() => {
-    if (!running) return;
-    const id = setTimeout(() => {
-      const canvas = canvasRef.current!;
-      const dpr = window.devicePixelRatio || 1;
-      const worldW = canvas.width / dpr;
-      playerRef.current.x = clamp(playerRef.current.x, 4, worldW - playerRef.current.size - 4);
-    }, 50);
-    return () => clearTimeout(id);
-  }, [running]);
-
-  // UI helpers
-  const showOverlay = !running || paused;
-
-  return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-slate-50 to-slate-100 flex items-center justify-center p-4 select-none">
-      <Card className="w-full max-w-md shadow-xl border-0">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-semibold">Square Dodger</span>
-              <Trophy className="w-5 h-5" />
-              <span className="text-sm text-slate-500">Best: {best}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" size="icon" onClick={() => setMuted(m => !m)} aria-label={muted ? "Unmute" : "Mute"}>
-                {muted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-              </Button>
-              <Button variant="secondary" size="icon" onClick={() => setPaused(p => { if (!running) return p; const np = !p; if (p) loop(); return np; })} disabled={!running} aria-label={paused ? "Play" : "Pause"}>
-                {paused ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}
-              </Button>
-              <Button variant="secondary" size="icon" onClick={startGame} aria-label="Restart">
-                <RotateCcw className="w-5 h-5" />
-              </Button>
-            </div>
-          </div>
-
-          <div className="relative rounded-2xl overflow-hidden ring-1 ring-slate-200">
-            <canvas
-              ref={canvasRef}
-              onTouchStart={(e) => { setTouching(true); handleTouch(e); }}
-              onTouchMove={handleTouch}
-              onTouchEnd={() => { setTouching(false); stopTouch(); }}
-              className="block bg-white"
-            />
-
-            <AnimatePresence>
-              {showOverlay && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center"
-                >
-                  <div className="text-center px-6">
-                    {!running ? (
-                      <>
-                        <h2 className="text-2xl font-bold mb-2">Dodge the red blocks!</h2>
-                        <p className="text-slate-600 mb-4">Use <kbd className='px-1 rounded bg-slate-200'>←</kbd> <kbd className='px-1 rounded bg-slate-200'>→</kbd> or tap left/right.
-                        Survive as long as you can to raise your score.</p>
-                        <div className="flex items-center justify-center gap-2 mb-4">
-                          {(["Easy","Normal","Hard"] as const).map((d) => (
-                            <button
-                              key={d}
-                              onClick={() => setDifficulty(d)}
-                              className={`px-3 py-1 rounded-full text-sm border ${difficulty===d?"bg-slate-900 text-white":"bg-white"}`}
-                            >{d}</button>
-                          ))}
-                        </div>
-                        <Button onClick={startGame} className="px-6">Start</Button>
-                        <p className="text-xs text-slate-500 mt-3">Press <kbd className='px-1 rounded bg-slate-200'>Space</kbd> to start, <kbd className='px-1 rounded bg-slate-200'>P</kbd> to pause.</p>
-                      </>
-                    ) : (
-                      <div>
-                        <h2 className="text-2xl font-bold mb-2">Paused</h2>
-                        <p className="text-slate-600 mb-4">Take a breather. Ready?</p>
-                        <Button onClick={() => { setPaused(false); loop(); }} className="px-6">Resume</Button>
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Touch hint */}
-            <AnimatePresence>
-              {running && touching && !paused && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs px-2 py-1 bg-slate-900 text-white/90 rounded-full">
-                  Tapping left/right moves the square
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
-            <div>Score: <span className="font-semibold">{score}</span></div>
-            <div>Difficulty: <span className="font-semibold">{difficulty}</span></div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+function resetGame() {
+  score = 0;
+  player.x = 160;
+  player.y = 480;
+  obstacles = [];
 }
+
+function spawnObstacle() {
+  const w = rand(24, 60);
+  const h = rand(14, 28);
+  const x = rand(4, canvas.width - w - 4);
+  const vy = rand(2.2, 3.6);
+  obstacles.push({ x, y: -h, w, h, vy });
+}
+
+let spawnTimer = 0;
+function update() {
+  if (!running) return;
+
+  // Player movement
+  if (keys["ArrowLeft"] || keys["a"]) player.x -= player.speed;
+  if (keys["ArrowRight"] || keys["d"]) player.x += player.speed;
+  player.x = clamp(player.x, 4, canvas.width - player.size - 4);
+
+  // Spawn obstacles
+  spawnTimer -= 16;
+  if (spawnTimer <= 0) {
+    spawnObstacle();
+    spawnTimer = 600 + rand(-120, 120);
+  }
+
+  // Update obstacles
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.y += o.vy;
+    if (o.y > canvas.height + 40) {
+      obstacles.splice(i, 1);
+      score++;
+    }
+  }
+
+  // Collision detection
+  for (const o of obstacles) {
+    if (
+      player.x < o.x + o.w &&
+      player.x + player.size > o.x &&
+      player.y < o.y + o.h &&
+      player.y + player.size > o.y
+    ) {
+      gameOver();
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Player
+  ctx.fillStyle = "#0ea5e9";
+  ctx.fillRect(player.x, player.y, player.size, player.size);
+
+  // Obstacles
+  ctx.fillStyle = "#ef4444";
+  for (const o of obstacles) {
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+  }
+
+  scoreboard.textContent = `Score: ${score} | Best: ${best}`;
+}
+
+function loop() {
+  update();
+  draw();
+  if (running) requestAnimationFrame(loop);
+}
+
+function startGame() {
+  resetGame();
+  running = true;
+  loop();
+}
+
+function gameOver() {
+  running = false;
+  best = Math.max(best, score);
+  localStorage.setItem("square_dodger_best", best);
+  alert(`Game Over! Your score: ${score}`);
+}
+
+startBtn.addEventListener("click", startGame);
+</script>
+
+</body>
+</html>
